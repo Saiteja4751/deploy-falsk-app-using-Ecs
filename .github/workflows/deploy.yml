@@ -28,6 +28,13 @@ jobs:
       run: |
         echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
 
+    - name: Ensure ECR Repository Exists
+      run: |
+        REPO_NAME=${{ env.ECR_REPO }}
+        aws ecr describe-repositories --repository-names $REPO_NAME > /dev/null 2>&1 || \
+        aws ecr create-repository --repository-name $REPO_NAME
+        echo "✅ ECR repository '$REPO_NAME' is ready."
+
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v3
 
