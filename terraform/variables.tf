@@ -1,13 +1,9 @@
 variable "app_name" {
+  type    = string
   default = "flask-ecs-app"
 }
 
-variable "security_group_name" {
-  default = "flask-ecs-app-sg"
-}
-
-
 variable "iam_role_name" {
+  type    = string
   default = "flask-ecs-app-ecs-task-execution"
 }
- 

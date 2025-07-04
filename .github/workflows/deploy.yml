@@ -52,27 +52,24 @@ jobs:
       run: |
         docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
 
-    - name: Force ECS Service Redeploy
+    - name: Force ECS Service Redeploy (if exists)
       run: |
         CLUSTER_NAME="${ECR_REPO}-cluster"
         SERVICE_NAME="${ECR_REPO}-service"
 
         echo "🔍 Checking if ECS service $SERVICE_NAME exists in cluster $CLUSTER_NAME..."
-        SERVICE_EXISTS=$(aws ecs describe-services \
+        if aws ecs describe-services \
           --cluster $CLUSTER_NAME \
           --services $SERVICE_NAME \
           --query "services[0].status" \
-          --output text 2>/dev/null || echo "NOT_FOUND")
-
-        if [ "$SERVICE_EXISTS" = "ACTIVE" ]; then
-          echo "✅ ECS service found. Triggering force deployment..."
+          --output text | grep -q "ACTIVE"; then
+          echo "✅ ECS service found. Triggering redeployment..."
           aws ecs update-service \
             --cluster $CLUSTER_NAME \
             --service $SERVICE_NAME \
             --force-new-deployment
         else
-          echo "❌ ECS service $SERVICE_NAME not found in $CLUSTER_NAME. Skipping redeploy."
-          exit 1
+          echo "ℹ️ ECS service not found (likely just created by Terraform). Skipping redeploy."
         fi
 
     - name: Wait for ECS Service to Stabilize
