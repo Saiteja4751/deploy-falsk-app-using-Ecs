@@ -1,9 +1,21 @@
-# Default VPC
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Variables
+variable "app_name" {
+  default = "flask-ecs-app"
+}
+
+variable "iam_role_name" {
+  default = "flask-ecs-app-ecs-task-execution"
+}
+
+# Get default VPC and subnets
 data "aws_vpc" "default" {
   default = true
 }
 
-# Get Subnets
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -11,41 +23,8 @@ data "aws_subnets" "default" {
   }
 }
 
-# ECR Repository – try to fetch existing
-data "aws_ecr_repository" "existing" {
-  name = var.app_name
-}
-
-# IAM Role – check if exists
-data "aws_iam_role" "existing" {
-  name = var.iam_role_name
-}
-
-# Fallback IAM Role if not exists
-resource "aws_iam_role" "ecs_task_execution_role" {
-  count = can(data.aws_iam_role.existing.arn) ? 0 : 1
-  name  = var.iam_role_name
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action = "sts:AssumeRole",
-      Effect = "Allow",
-      Principal = {
-        Service = "ecs-tasks.amazonaws.com"
-      }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
-  count      = can(data.aws_iam_role.existing.arn) ? 0 : 1
-  role       = aws_iam_role.ecs_task_execution_role[0].name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-# Security Group – use if exists, else create
-data "aws_security_group" "existing" {
+# Try to find existing security group
+data "aws_security_group" "existing_sg" {
   filter {
     name   = "group-name"
     values = ["${var.app_name}-sg"]
@@ -55,10 +34,15 @@ data "aws_security_group" "existing" {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
+
+  lifecycle {
+    ignore_errors = true
+  }
 }
 
+# Create security group only if not found
 resource "aws_security_group" "allow_all" {
-  count = can(data.aws_security_group.existing.id) ? 0 : 1
+  count = can(data.aws_security_group.existing_sg.id) ? 0 : 1
 
   name        = "${var.app_name}-sg"
   description = "Allow all traffic"
@@ -79,30 +63,71 @@ resource "aws_security_group" "allow_all" {
   }
 }
 
-# Use locals to toggle between existing/new resources
-locals {
-  sg_id     = can(data.aws_security_group.existing.id) ? data.aws_security_group.existing.id : aws_security_group.allow_all[0].id
-  iam_role  = can(data.aws_iam_role.existing.arn) ? data.aws_iam_role.existing.arn : aws_iam_role.ecs_task_execution_role[0].arn
-  image_url = "${var.app_name}:latest"
+# Get existing IAM role
+data "aws_iam_role" "existing" {
+  name = var.iam_role_name
+
+  lifecycle {
+    ignore_errors = true
+  }
 }
 
-# ECS Cluster
+# Conditional logic
+locals {
+  role_exists    = can(data.aws_iam_role.existing.arn)
+  security_group = can(data.aws_security_group.existing_sg.id) ? data.aws_security_group.existing_sg.id : aws_security_group.allow_all[0].id
+}
+
+# Create IAM role if not found
+resource "aws_iam_role" "ecs_task_execution_role" {
+  count = local.role_exists ? 0 : 1
+
+  name = var.iam_role_name
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action = "sts:AssumeRole",
+      Effect = "Allow",
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
+  count      = local.role_exists ? 0 : 1
+  role       = aws_iam_role.ecs_task_execution_role[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# ECR repository (always managed)
+resource "aws_ecr_repository" "app_repo" {
+  name = var.app_name
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# ECS cluster
 resource "aws_ecs_cluster" "app_cluster" {
   name = "${var.app_name}-cluster"
 }
 
-# Task Definition
+# ECS task definition
 resource "aws_ecs_task_definition" "app_task" {
   family                   = "${var.app_name}-task"
   requires_compatibilities = ["FARGATE"]
   network_mode            = "awsvpc"
   cpu                     = "256"
   memory                  = "512"
-  execution_role_arn      = local.iam_role
+  execution_role_arn      = local.role_exists ? data.aws_iam_role.existing.arn : aws_iam_role.ecs_task_execution_role[0].arn
 
   container_definitions = jsonencode([{
     name      = var.app_name
-    image     = local.image_url
+    image     = "${aws_ecr_repository.app_repo.repository_url}:latest"
     essential = true
     portMappings = [{
       containerPort = 5000
@@ -111,7 +136,7 @@ resource "aws_ecs_task_definition" "app_task" {
   }])
 }
 
-# ECS Service
+# ECS service
 resource "aws_ecs_service" "app_service" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.app_cluster.id
@@ -122,7 +147,7 @@ resource "aws_ecs_service" "app_service" {
   network_configuration {
     subnets          = data.aws_subnets.default.ids
     assign_public_ip = true
-    security_groups  = [local.sg_id]
+    security_groups  = [local.security_group]
   }
 
   depends_on = [aws_ecs_task_definition.app_task]
