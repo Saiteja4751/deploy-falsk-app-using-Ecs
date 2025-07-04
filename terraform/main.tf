@@ -1,76 +1,134 @@
-resource "aws_ecr_repository" "app_repo" {
-  name = var.app_name
-}
+name: Deploy Flask App to ECS
 
-resource "aws_ecs_cluster" "cluster" {
-  name = "${var.app_name}-cluster"
-}
+on:
+  push:
+    branches:
+      - main
 
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "${var.app_name}-ecs-task-execution"
-  assume_role_policy = data.aws_iam_policy_document.assume_role_policy.json
-}
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: flask-ecs-app
 
-data "aws_iam_policy_document" "assume_role_policy" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
-}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_attach" {
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-resource "aws_ecs_task_definition" "app_task" {
-  family                   = var.app_name
-  requires_compatibilities = ["FARGATE"]
-  network_mode            = "awsvpc"
-  cpu                     = "256"
-  memory                  = "512"
-  execution_role_arn      = aws_iam_role.ecs_task_execution_role.arn
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-  container_definitions = jsonencode([{
-    name      = var.app_name
-    image     = "${aws_ecr_repository.app_repo.repository_url}:latest"
-    essential = true
-    portMappings = [{
-      containerPort = 5000
-      hostPort      = 5000
-    }]
-  }])
-}
+    - name: Get AWS Account ID
+      run: |
+        echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
 
-resource "aws_ecs_service" "app_service" {
-  name            = "${var.app_name}-service"
-  cluster         = aws_ecs_cluster.cluster.id
-  task_definition = aws_ecs_task_definition.app_task.arn
-  launch_type     = "FARGATE"
-  desired_count   = 1
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
 
-  network_configuration {
-    subnets          = [data.aws_subnets.default.ids[0]]
-    assign_public_ip = true
-    security_groups  = [data.aws_security_group.default.id]
-  }
-}
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform
 
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
+    - name: Delete Existing IAM Role if Exists
+      run: |
+        ROLE_NAME="${{ env.ECR_REPO }}-ecs-task-execution"
+        ROLE_EXISTS=$(aws iam get-role --role-name $ROLE_NAME --query "Role.RoleName" --output text 2>/dev/null || true)
 
-data "aws_vpc" "default" {
-  default = true
-}
+        if [[ "$ROLE_EXISTS" == "$ROLE_NAME" ]]; then
+          echo "⚠️ Role $ROLE_NAME exists. Deleting..."
+          aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || true
+          aws iam delete-role --role-name $ROLE_NAME || true
+          echo "✅ Deleted existing IAM role."
+        else
+          echo "✅ No pre-existing IAM role. Continuing..."
+        fi
 
-data "aws_security_group" "default" {
-  name   = "default"
-  vpc_id = data.aws_vpc.default.id
-}
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+      working-directory: terraform
+
+    - name: Log in to Amazon ECR
+      run: |
+        aws ecr get-login-password | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+    - name: Build Docker Image
+      run: |
+        docker build -t $ECR_REPO .
+        docker tag $ECR_REPO:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
+
+    - name: Push Docker Image to ECR
+      run: |
+        docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
+
+    - name: Force ECS Service Redeploy
+      run: |
+        aws ecs update-service \
+          --cluster ${ECR_REPO}-cluster \
+          --service ${ECR_REPO}-service \
+          --force-new-deployment
+
+    - name: Wait for ECS Service to stabilize
+      run: |
+        aws ecs wait services-stable --cluster ${ECR_REPO}-cluster --services ${ECR_REPO}-service
+
+    - name: Get Public IP of Running ECS Task
+      run: |
+        CLUSTER_NAME="${{ env.ECR_REPO }}-cluster"
+        SERVICE_NAME="${{ env.ECR_REPO }}-service"
+
+        echo "⏳ Waiting for ECS task to start..."
+        for i in {1..10}; do
+          TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
+          if [[ "$TASK_ARN" != "None" && "$TASK_ARN" != "" ]]; then
+            echo "✅ Found task: $TASK_ARN"
+            break
+          fi
+          sleep 10
+        done
+
+        if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
+          echo "❌ No ECS task found. Deployment may have failed."
+          exit 1
+        fi
+
+        ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN \
+          --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
+
+        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID \
+          --query "NetworkInterfaces[0].Association.PublicIp" --output text)
+
+        echo "🔗 Your Flask App is live at: http://$PUBLIC_IP:5000"
+
+  destroy:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+    - name: Wait before destroying resources
+      run: sleep 360  # 6 minutes
+
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform
+
+    - name: Terraform Destroy (auto-delete resources after 6 minutes)
+      run: terraform destroy -auto-approve
+      working-directory: terraform
