@@ -1,7 +1,3 @@
-provider "aws" {
-  region = "us-east-1"
-}
-
 # Variables
 variable "app_name" {
   default = "flask-ecs-app"
@@ -35,9 +31,7 @@ data "aws_security_group" "existing_sg" {
     values = [data.aws_vpc.default.id]
   }
 
-  lifecycle {
-    ignore_errors = true
-  }
+  
 }
 
 # Create security group only if not found
@@ -67,9 +61,6 @@ resource "aws_security_group" "allow_all" {
 data "aws_iam_role" "existing" {
   name = var.iam_role_name
 
-  lifecycle {
-    ignore_errors = true
-  }
 }
 
 # Conditional logic
