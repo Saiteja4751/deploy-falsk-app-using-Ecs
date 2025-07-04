@@ -1,0 +1,67 @@
+name: Deploy Flask App to ECS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: flask-ecs-app
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Get AWS Account ID
+      id: get_account_id
+      run: |
+        echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform
+
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+      working-directory: terraform
+
+    - name: Log in to Amazon ECR
+      run: |
+        aws ecr get-login-password | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+    - name: Build Docker Image
+      run: |
+        docker build -t $ECR_REPO .
+        docker tag $ECR_REPO:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
+
+    - name: Push Docker Image to ECR
+      run: |
+        docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
+
+    - name: Force ECS Service Redeploy
+      run: |
+        aws ecs update-service           --cluster ${ECR_REPO}-cluster           --service ${ECR_REPO}-service           --force-new-deployment
+
+    - name: Get Public IP of Running ECS Task
+      run: |
+        CLUSTER_NAME="${{ env.ECR_REPO }}-cluster"
+        SERVICE_NAME="${{ env.ECR_REPO }}-service"
+        TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
+        ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
+        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID --query "NetworkInterfaces[0].Association.PublicIp" --output text)
+        echo "Your Flask App is live at: http://$PUBLIC_IP:5000"
