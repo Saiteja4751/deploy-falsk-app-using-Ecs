@@ -35,6 +35,20 @@ jobs:
       run: terraform init
       working-directory: terraform
 
+    - name: Delete Existing IAM Role if Exists
+      run: |
+        ROLE_NAME="${{ env.ECR_REPO }}-ecs-task-execution"
+        ROLE_EXISTS=$(aws iam get-role --role-name $ROLE_NAME --query "Role.RoleName" --output text 2>/dev/null || true)
+
+        if [[ "$ROLE_EXISTS" == "$ROLE_NAME" ]]; then
+          echo "⚠️ Role $ROLE_NAME exists. Deleting..."
+          aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || true
+          aws iam delete-role --role-name $ROLE_NAME || true
+          echo "✅ Deleted existing IAM role."
+        else
+          echo "✅ No pre-existing IAM role. Continuing..."
+        fi
+
     - name: Terraform Apply
       run: terraform apply -auto-approve
       working-directory: terraform
