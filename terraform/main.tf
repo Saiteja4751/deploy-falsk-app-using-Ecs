@@ -49,11 +49,8 @@ resource "aws_security_group" "allow_all" {
 
 data "aws_iam_role" "existing" {
   name = var.iam_role_name
-
-  lifecycle {
-    ignore_errors = true
-  }
 }
+
 
 locals {
   role_exists     = can(data.aws_iam_role.existing.arn)
