@@ -52,6 +52,10 @@ jobs:
       run: |
         docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
 
+    - name: List ECS Services for Debug
+      run: |
+        aws ecs list-services --cluster ${ECR_REPO}-cluster
+
     - name: Force ECS Service Redeploy
       run: |
         aws ecs update-service \
@@ -59,7 +63,7 @@ jobs:
           --service ${ECR_REPO}-service \
           --force-new-deployment
 
-    - name: Wait for ECS Service to stabilize
+    - name: Wait for ECS Service to Stabilize
       run: |
         aws ecs wait services-stable --cluster ${ECR_REPO}-cluster --services ${ECR_REPO}-service
 
@@ -90,6 +94,3 @@ jobs:
           --query "NetworkInterfaces[0].Association.PublicIp" --output text)
 
         echo "🔗 Your Flask App is live at: http://$PUBLIC_IP:5000"
-
-
-        
