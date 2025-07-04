@@ -1,26 +1,50 @@
-# Get existing ECR repo
-data "aws_ecr_repository" "app_repo" {
-  name = var.app_name
+provider "aws" {
+  region = "us-east-1"
 }
 
-# Get default VPC
 data "aws_vpc" "default" {
   default = true
 }
 
-# Get existing SG by name
-data "aws_security_group" "existing_sg" {
-  filter {
-    name   = "group-name"
-    values = ["${var.app_name}-sg"]
-  }
+data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
 }
 
-# IAM role (create or reuse)
+resource "aws_ecr_repository" "app_repo" {
+  name = var.app_name
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_security_group" "app_sg" {
+  name        = var.security_group_name
+  description = "Allow port 5000"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.app_name}-ecs-task-execution"
 
@@ -36,21 +60,15 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   })
 
   lifecycle {
-    create_before_destroy = true
-    prevent_destroy       = true
+    prevent_destroy = true
   }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
-# ECS Cluster
 resource "aws_ecs_cluster" "app_cluster" {
   name = "${var.app_name}-cluster"
 
@@ -59,15 +77,6 @@ resource "aws_ecs_cluster" "app_cluster" {
   }
 }
 
-# Get subnets
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
-# Task Definition
 resource "aws_ecs_task_definition" "app_task" {
   family                   = "${var.app_name}-task"
   requires_compatibilities = ["FARGATE"]
@@ -76,20 +85,17 @@ resource "aws_ecs_task_definition" "app_task" {
   memory                  = "512"
   execution_role_arn      = aws_iam_role.ecs_task_execution_role.arn
 
-  container_definitions = jsonencode([
-    {
-      name      = var.app_name
-      image     = "${data.aws_ecr_repository.app_repo.repository_url}:latest"
-      essential = true
-      portMappings = [{
-        containerPort = 5000
-        hostPort      = 5000
-      }]
-    }
-  ])
+  container_definitions = jsonencode([{
+    name      = var.app_name
+    image     = "${aws_ecr_repository.app_repo.repository_url}:latest"
+    essential = true
+    portMappings = [{
+      containerPort = 5000
+      hostPort      = 5000
+    }]
+  }])
 }
 
-# ECS Service
 resource "aws_ecs_service" "app_service" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.app_cluster.id
@@ -100,7 +106,7 @@ resource "aws_ecs_service" "app_service" {
   network_configuration {
     subnets          = data.aws_subnets.default.ids
     assign_public_ip = true
-    security_groups  = [data.aws_security_group.existing_sg.id]
+    security_groups  = [aws_security_group.app_sg.id]
   }
 
   lifecycle {

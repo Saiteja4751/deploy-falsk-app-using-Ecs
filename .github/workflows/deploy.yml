@@ -28,34 +28,35 @@ jobs:
       run: |
         echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
 
+    - name: Ensure ECR Repo Exists
+      run: |
+        if ! aws ecr describe-repositories --repository-names $ECR_REPO > /dev/null 2>&1; then
+          echo "📦 Creating ECR repo: $ECR_REPO"
+          aws ecr create-repository --repository-name $ECR_REPO
+        else
+          echo "✅ ECR Repo $ECR_REPO already exists."
+        fi
+
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v3
 
     - name: Terraform Init
       run: terraform init
-      working-directory: terraform
+      working-directory: .
 
     - name: Terraform Apply
       run: terraform apply -auto-approve
-      working-directory: terraform
-      continue-on-error: true  # Prevent failure if resource already exists
+      working-directory: .
 
-    - name: Log in to Amazon ECR
+    - name: Log in to ECR
       run: |
-        aws ecr get-login-password | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        aws ecr get-login-password | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com
 
-    - name: Build Docker Image
+    - name: Build and Push Docker Image
       run: |
         docker build -t $ECR_REPO .
-        docker tag $ECR_REPO:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
-
-    - name: Push Docker Image to ECR
-      run: |
-        docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
-
-    - name: List ECS Services for Debug
-      run: |
-        aws ecs list-services --cluster ${ECR_REPO}-cluster
+        docker tag $ECR_REPO:latest $AWS_ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_REPO:latest
+        docker push $AWS_ACCOUNT_ID.dkr.ecr.${AWS_REGION}.amazonaws.com/$ECR_REPO:latest
 
     - name: Force ECS Service Redeploy
       run: |
@@ -64,29 +65,19 @@ jobs:
           --service ${ECR_REPO}-service \
           --force-new-deployment
 
-    - name: Wait for ECS Service to Stabilize
+    - name: Get Public IP of ECS App
       run: |
-        aws ecs wait services-stable --cluster ${ECR_REPO}-cluster --services ${ECR_REPO}-service
-
-    - name: Get Public IP of Running ECS Task
-      run: |
-        CLUSTER_NAME="${{ env.ECR_REPO }}-cluster"
-        SERVICE_NAME="${{ env.ECR_REPO }}-service"
+        CLUSTER_NAME="${ECR_REPO}-cluster"
+        SERVICE_NAME="${ECR_REPO}-service"
 
         echo "⏳ Waiting for ECS task to start..."
         for i in {1..10}; do
           TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
           if [[ "$TASK_ARN" != "None" && "$TASK_ARN" != "" ]]; then
-            echo "✅ Found task: $TASK_ARN"
             break
           fi
           sleep 10
         done
-
-        if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
-          echo "❌ No ECS task found. Deployment may have failed."
-          exit 1
-        fi
 
         ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN \
           --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
