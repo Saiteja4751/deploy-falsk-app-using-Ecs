@@ -55,13 +55,39 @@ jobs:
 
     - name: Force ECS Service Redeploy
       run: |
-        aws ecs update-service           --cluster ${ECR_REPO}-cluster           --service ${ECR_REPO}-service           --force-new-deployment
+        aws ecs update-service \
+          --cluster ${ECR_REPO}-cluster \
+          --service ${ECR_REPO}-service \
+          --force-new-deployment
+
+    - name: Wait for ECS Service to stabilize
+      run: |
+        aws ecs wait services-stable --cluster ${ECR_REPO}-cluster --services ${ECR_REPO}-service
 
     - name: Get Public IP of Running ECS Task
       run: |
         CLUSTER_NAME="${{ env.ECR_REPO }}-cluster"
         SERVICE_NAME="${{ env.ECR_REPO }}-service"
-        TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
-        ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
-        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID --query "NetworkInterfaces[0].Association.PublicIp" --output text)
-        echo "Your Flask App is live at: http://$PUBLIC_IP:5000"
+
+        echo "⏳ Waiting for ECS task to start..."
+        for i in {1..10}; do
+          TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
+          if [[ "$TASK_ARN" != "None" && "$TASK_ARN" != "" ]]; then
+            echo "✅ Found task: $TASK_ARN"
+            break
+          fi
+          sleep 10
+        done
+
+        if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
+          echo "❌ No ECS task found. Deployment may have failed."
+          exit 1
+        fi
+
+        ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN \
+          --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
+
+        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID \
+          --query "NetworkInterfaces[0].Association.PublicIp" --output text)
+
+        echo "🔗 Your Flask App is live at: http://$PUBLIC_IP:5000"
