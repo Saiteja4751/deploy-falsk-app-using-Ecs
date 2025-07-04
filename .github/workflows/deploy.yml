@@ -25,7 +25,6 @@ jobs:
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Get AWS Account ID
-      id: get_account_id
       run: |
         echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
 
