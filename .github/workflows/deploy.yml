@@ -28,33 +28,12 @@ jobs:
       run: |
         echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
 
-    - name: Ensure ECR Repository Exists
-      run: |
-        REPO_NAME=${{ env.ECR_REPO }}
-        aws ecr describe-repositories --repository-names $REPO_NAME > /dev/null 2>&1 || \
-        aws ecr create-repository --repository-name $REPO_NAME
-        echo "✅ ECR repository '$REPO_NAME' is ready."
-
     - name: Set up Terraform
       uses: hashicorp/setup-terraform@v3
 
     - name: Terraform Init
       run: terraform init
       working-directory: terraform
-
-    - name: Delete Existing IAM Role if Exists
-      run: |
-        ROLE_NAME="${{ env.ECR_REPO }}-ecs-task-execution"
-        ROLE_EXISTS=$(aws iam get-role --role-name $ROLE_NAME --query "Role.RoleName" --output text 2>/dev/null || true)
-
-        if [[ "$ROLE_EXISTS" == "$ROLE_NAME" ]]; then
-          echo "⚠️ Role $ROLE_NAME exists. Deleting..."
-          aws iam detach-role-policy --role-name $ROLE_NAME --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy || true
-          aws iam delete-role --role-name $ROLE_NAME || true
-          echo "✅ Deleted existing IAM role."
-        else
-          echo "✅ No pre-existing IAM role. Continuing..."
-        fi
 
     - name: Terraform Apply
       run: terraform apply -auto-approve
@@ -112,30 +91,5 @@ jobs:
 
         echo "🔗 Your Flask App is live at: http://$PUBLIC_IP:5000"
 
-  destroy:
-    needs: deploy
-    runs-on: ubuntu-latest
-    steps:
-    - name: Wait before destroying resources
-      run: sleep 360  # 6 minutes
 
-    - name: Checkout Code
-      uses: actions/checkout@v3
-
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-
-    - name: Terraform Init
-      run: terraform init
-      working-directory: terraform
-
-    - name: Terraform Destroy (auto-delete resources after 6 minutes)
-      run: terraform destroy -auto-approve
-      working-directory: terraform
+        
