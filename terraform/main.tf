@@ -1,3 +1,7 @@
+provider "aws" {
+  region = "us-east-1"
+}
+
 data "aws_vpc" "default" {
   default = true
 }
@@ -9,23 +13,33 @@ data "aws_subnets" "default" {
   }
 }
 
-resource "aws_ecr_repository" "app_repo" {
-  name = var.app_name
+data "aws_security_group" "existing_sg" {
+  filter {
+    name   = "group-name"
+    values = ["${var.app_name}-sg"]
+  }
+
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 
   lifecycle {
-    prevent_destroy = true
+    ignore_errors = true
   }
 }
 
-resource "aws_security_group" "app_sg" {
-  name        = var.security_group_name
-  description = "Allow port 5000"
+resource "aws_security_group" "allow_all" {
+  count = can(data.aws_security_group.existing_sg.id) ? 0 : 1
+
+  name        = "${var.app_name}-sg"
+  description = "Allow all traffic"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
@@ -35,14 +49,25 @@ resource "aws_security_group" "app_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+data "aws_iam_role" "existing" {
+  name = var.iam_role_name
 
   lifecycle {
-    prevent_destroy = true
+    ignore_errors = true
   }
 }
 
+locals {
+  role_exists     = can(data.aws_iam_role.existing.arn)
+  security_group  = local.role_exists ? data.aws_security_group.existing_sg.id : aws_security_group.allow_all[0].id
+}
+
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "${var.app_name}-ecs-task-execution"
+  count = local.role_exists ? 0 : 1
+
+  name = var.iam_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -54,23 +79,16 @@ resource "aws_iam_role" "ecs_task_execution_role" {
       }
     }]
   })
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
+  count      = local.role_exists ? 0 : 1
+  role       = aws_iam_role.ecs_task_execution_role[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 resource "aws_ecs_cluster" "app_cluster" {
   name = "${var.app_name}-cluster"
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "aws_ecs_task_definition" "app_task" {
@@ -79,11 +97,11 @@ resource "aws_ecs_task_definition" "app_task" {
   network_mode            = "awsvpc"
   cpu                     = "256"
   memory                  = "512"
-  execution_role_arn      = aws_iam_role.ecs_task_execution_role.arn
+  execution_role_arn      = local.role_exists ? data.aws_iam_role.existing.arn : aws_iam_role.ecs_task_execution_role[0].arn
 
   container_definitions = jsonencode([{
     name      = var.app_name
-    image     = "${aws_ecr_repository.app_repo.repository_url}:latest"
+    image     = "${var.app_name}:latest"
     essential = true
     portMappings = [{
       containerPort = 5000
@@ -102,10 +120,8 @@ resource "aws_ecs_service" "app_service" {
   network_configuration {
     subnets          = data.aws_subnets.default.ids
     assign_public_ip = true
-    security_groups  = [aws_security_group.app_sg.id]
+    security_groups  = [local.security_group]
   }
 
-  lifecycle {
-    create_before_destroy = true
-  }
+  depends_on = [aws_ecs_task_definition.app_task]
 }
