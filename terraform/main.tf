@@ -1,7 +1,3 @@
-variable "app_name" {
-  default = "flask-ecs-app"
-}
-
 data "aws_ecr_repository" "app_repo" {
   name = var.app_name
 }
