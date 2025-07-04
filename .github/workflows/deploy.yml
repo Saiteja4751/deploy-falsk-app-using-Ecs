@@ -90,3 +90,31 @@ jobs:
           --query "NetworkInterfaces[0].Association.PublicIp" --output text)
 
         echo "🔗 Your Flask App is live at: http://$PUBLIC_IP:5000"
+
+  destroy:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+    - name: Wait before destroying resources
+      run: sleep 360  # 6 minutes
+
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform
+
+    - name: Terraform Destroy (auto-delete resources after 6 minutes)
+      run: terraform destroy -auto-approve
+      working-directory: terraform
