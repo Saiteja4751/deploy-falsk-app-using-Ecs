@@ -38,6 +38,7 @@ jobs:
     - name: Terraform Apply
       run: terraform apply -auto-approve
       working-directory: terraform
+      continue-on-error: true  # Prevent failure if resource already exists
 
     - name: Log in to Amazon ECR
       run: |

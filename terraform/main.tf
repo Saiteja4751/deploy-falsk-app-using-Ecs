@@ -1,4 +1,4 @@
-# Get the existing ECR repo
+# Get existing ECR repo
 data "aws_ecr_repository" "app_repo" {
   name = var.app_name
 }
@@ -8,20 +8,19 @@ data "aws_vpc" "default" {
   default = true
 }
 
-# Get existing security group by name (instead of creating it)
+# Get existing SG by name
 data "aws_security_group" "existing_sg" {
   filter {
     name   = "group-name"
     values = ["${var.app_name}-sg"]
   }
-
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
 }
 
-# IAM role (create if needed)
+# IAM role (create or reuse)
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "${var.app_name}-ecs-task-execution"
 
@@ -35,18 +34,32 @@ resource "aws_iam_role" "ecs_task_execution_role" {
       }
     }]
   })
+
+  lifecycle {
+    create_before_destroy = true
+    prevent_destroy       = true
+  }
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
-# ECS cluster (create if not found)
+# ECS Cluster
 resource "aws_ecs_cluster" "app_cluster" {
   name = "${var.app_name}-cluster"
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
+# Get subnets
 data "aws_subnets" "default" {
   filter {
     name   = "vpc-id"
@@ -54,6 +67,7 @@ data "aws_subnets" "default" {
   }
 }
 
+# Task Definition
 resource "aws_ecs_task_definition" "app_task" {
   family                   = "${var.app_name}-task"
   requires_compatibilities = ["FARGATE"]
@@ -75,6 +89,7 @@ resource "aws_ecs_task_definition" "app_task" {
   ])
 }
 
+# ECS Service
 resource "aws_ecs_service" "app_service" {
   name            = "${var.app_name}-service"
   cluster         = aws_ecs_cluster.app_cluster.id
@@ -86,5 +101,9 @@ resource "aws_ecs_service" "app_service" {
     subnets          = data.aws_subnets.default.ids
     assign_public_ip = true
     security_groups  = [data.aws_security_group.existing_sg.id]
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
