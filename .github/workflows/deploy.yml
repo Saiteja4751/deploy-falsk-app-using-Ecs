@@ -42,11 +42,11 @@ jobs:
 
     - name: Terraform Init
       run: terraform init
-      working-directory: .
+      working-directory: terraform
 
     - name: Terraform Apply
       run: terraform apply -auto-approve
-      working-directory: .
+      working-directory: terraform
 
     - name: Log in to ECR
       run: |
@@ -64,6 +64,10 @@ jobs:
           --cluster ${ECR_REPO}-cluster \
           --service ${ECR_REPO}-service \
           --force-new-deployment
+
+    - name: Wait for ECS Service to Stabilize
+      run: |
+        aws ecs wait services-stable --cluster ${ECR_REPO}-cluster --services ${ECR_REPO}-service
 
     - name: Get Public IP of ECS App
       run: |
