@@ -20,9 +20,7 @@ data "aws_security_group" "existing_sg" {
     values = [data.aws_vpc.default.id]
   }
 
-  lifecycle {
-    ignore_errors = true
-  }
+  
 }
 
 resource "aws_security_group" "allow_all" {
