@@ -15,7 +15,7 @@ data "aws_iam_policy_document" "assume_role_policy" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
-      type = "Service"
+      type        = "Service"
       identifiers = ["ecs-tasks.amazonaws.com"]
     }
   }
@@ -53,14 +53,17 @@ resource "aws_ecs_service" "app_service" {
   desired_count   = 1
 
   network_configuration {
-    subnets          = [data.aws_subnet_ids.default.ids[0]]
+    subnets          = [data.aws_subnets.default.ids[0]]
     assign_public_ip = true
     security_groups  = [data.aws_security_group.default.id]
   }
 }
 
-data "aws_subnet_ids" "default" {
-  vpc_id = data.aws_vpc.default.id
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
 }
 
 data "aws_vpc" "default" {
