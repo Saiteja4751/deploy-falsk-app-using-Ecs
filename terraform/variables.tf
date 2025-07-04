@@ -1,9 +1,9 @@
 variable "app_name" {
-  type    = string
-  default = "flask-ecs-app"
+  description = "Name of the Flask ECS application"
+  default     = "flask-ecs-app"
 }
 
 variable "iam_role_name" {
-  type    = string
-  default = "flask-ecs-app-ecs-task-execution"
+  description = "IAM role name for ECS task execution"
+  default     = "flask-ecs-app-ecs-task-execution"
 }
