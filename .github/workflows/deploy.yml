@@ -34,7 +34,7 @@ jobs:
     - name: Terraform Apply
       run: terraform -chdir=terraform apply -auto-approve
 
-    - name: Get ECR Repo URI
+    - name: Get ECR Repo URI-1
       id: get-ecr
       run: |
         REPO_URI=$(aws ecr describe-repositories --repository-names flask-ecr --query "repositories[0].repositoryUri" --output text)
