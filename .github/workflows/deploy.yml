@@ -40,7 +40,7 @@ jobs:
         REPO_URI=$(aws ecr describe-repositories --repository-names flask-ecr --query "repositories[0].repositoryUri" --output text)
         echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
 
-    - name: Build and Push Docker Image
+    - name: Build and Push Docker Image to ECR
       run: |
         docker build -t $REPO_URI:latest .
         aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REPO_URI
