@@ -1,145 +1,69 @@
-# Variables
-variable "app_name" {
-  default = "flask-ecs-app"
+provider "aws" {
+  region = var.aws_region
 }
 
-variable "iam_role_name" {
-  default = "flask-ecs-app-ecs-task-execution"
+resource "aws_ecr_repository" "flask_repo" {
+  name = var.ecr_repo_name
 }
 
-# Get default VPC and subnets
-data "aws_vpc" "default" {
-  default = true
+resource "aws_ecs_cluster" "flask_cluster" {
+  name = var.ecs_cluster_name
 }
 
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
-# Try to find existing security group
-data "aws_security_group" "existing_sg" {
-  filter {
-    name   = "group-name"
-    values = ["${var.app_name}-sg"]
-  }
-
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-
-  
-}
-
-# Create security group only if not found
-resource "aws_security_group" "allow_all" {
-  count = can(data.aws_security_group.existing_sg.id) ? 0 : 1
-
-  name        = "${var.app_name}-sg"
-  description = "Allow all traffic"
-  vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# Get existing IAM role
-data "aws_iam_role" "existing" {
-  name = var.iam_role_name
-
-}
-
-# Conditional logic
-locals {
-  role_exists    = can(data.aws_iam_role.existing.arn)
-  security_group = can(data.aws_security_group.existing_sg.id) ? data.aws_security_group.existing_sg.id : aws_security_group.allow_all[0].id
-}
-
-# Create IAM role if not found
 resource "aws_iam_role" "ecs_task_execution_role" {
-  count = local.role_exists ? 0 : 1
-
-  name = var.iam_role_name
-
+  name = "ecsTaskExecutionRole"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Action = "sts:AssumeRole",
       Effect = "Allow",
       Principal = {
         Service = "ecs-tasks.amazonaws.com"
-      }
+      },
+      Action = "sts:AssumeRole"
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_execution_policy" {
-  count      = local.role_exists ? 0 : 1
-  role       = aws_iam_role.ecs_task_execution_role[0].name
+resource "aws_iam_role_policy_attachment" "ecs_execution_attach" {
+  role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# ECR repository (always managed)
-resource "aws_ecr_repository" "app_repo" {
-  name = var.app_name
-
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-# ECS cluster
-resource "aws_ecs_cluster" "app_cluster" {
-  name = "${var.app_name}-cluster"
-}
-
-# ECS task definition
-resource "aws_ecs_task_definition" "app_task" {
-  family                   = "${var.app_name}-task"
+resource "aws_ecs_task_definition" "flask_task" {
+  family                   = var.ecs_task_family
+  cpu                      = "256"
+  memory                   = "512"
+  network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  network_mode            = "awsvpc"
-  cpu                     = "256"
-  memory                  = "512"
-  execution_role_arn      = local.role_exists ? data.aws_iam_role.existing.arn : aws_iam_role.ecs_task_execution_role[0].arn
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
 
-  container_definitions = jsonencode([{
-    name      = var.app_name
-    image     = "${aws_ecr_repository.app_repo.repository_url}:latest"
-    essential = true
-    portMappings = [{
-      containerPort = 5000
-      hostPort      = 5000
-    }]
-  }])
+  container_definitions = jsonencode([
+    {
+      name      = "flask-container",
+      image     = "${aws_ecr_repository.flask_repo.repository_url}:latest",
+      essential = true,
+      portMappings = [
+        {
+          containerPort = 5000,
+          hostPort      = 5000
+        }
+      ]
+    }
+  ])
 }
 
-# ECS service
-resource "aws_ecs_service" "app_service" {
-  name            = "${var.app_name}-service"
-  cluster         = aws_ecs_cluster.app_cluster.id
-  task_definition = aws_ecs_task_definition.app_task.arn
-  desired_count   = 1
+resource "aws_ecs_service" "flask_service" {
+  name            = var.ecs_service_name
+  cluster         = aws_ecs_cluster.flask_cluster.id
+  task_definition = aws_ecs_task_definition.flask_task.arn
   launch_type     = "FARGATE"
+  desired_count   = 1
 
   network_configuration {
-    subnets          = data.aws_subnets.default.ids
+    subnets         = var.subnet_ids
+    security_groups = [var.security_group_id]
     assign_public_ip = true
-    security_groups  = [local.security_group]
   }
 
-  depends_on = [aws_ecs_task_definition.app_task]
+  depends_on = [aws_ecs_task_definition.flask_task]
 }

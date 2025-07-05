@@ -1,13 +1,11 @@
-name: Deploy Flask App to ECS
+name: Terraform ECS Deployment
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPO: flask-ecs-app
+  AWS_REGION: ${{ secrets.AWS_REGION }}
 
 jobs:
   deploy:
@@ -24,78 +22,33 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Get AWS Account ID
-      run: echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_ENV
-
-    - name: Set up Terraform
+    - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
     - name: Terraform Init
-      run: terraform init
-      working-directory: terraform
+      run: terraform -chdir=terraform init
+
+    - name: Terraform Plan
+      run: terraform -chdir=terraform plan
 
     - name: Terraform Apply
-      run: terraform apply -auto-approve
-      working-directory: terraform
+      run: terraform -chdir=terraform apply -auto-approve
 
-    - name: Login to ECR
+    - name: Get ECR Repo URI
+      id: get-ecr
       run: |
-        aws ecr get-login-password | docker login --username AWS \
-        --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        REPO_URI=$(aws ecr describe-repositories --repository-names flask-ecr --query "repositories[0].repositoryUri" --output text)
+        echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
 
-    - name: Build and Tag Docker Image
+    - name: Build and Push Docker Image
       run: |
-        docker build -t $ECR_REPO .
-        docker tag $ECR_REPO:latest ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
+        docker build -t $REPO_URI:latest .
+        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REPO_URI
+        docker push $REPO_URI:latest
 
-    - name: Push Docker Image to ECR
+    - name: Force ECS Service Redeploy
       run: |
-        docker push ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPO:latest
-
-    - name: Force ECS Service Redeploy (if exists)
-      run: |
-        CLUSTER_NAME="${ECR_REPO}-cluster"
-        SERVICE_NAME="${ECR_REPO}-service"
-
-        echo "🔍 Checking if ECS service $SERVICE_NAME exists in cluster $CLUSTER_NAME..."
-        if aws ecs describe-services \
-          --cluster $CLUSTER_NAME \
-          --services $SERVICE_NAME \
-          --query "services[0].status" \
-          --output text | grep -q "ACTIVE"; then
-          echo "✅ ECS service found. Triggering redeployment..."
-          aws ecs update-service \
-            --cluster $CLUSTER_NAME \
-            --service $SERVICE_NAME \
-            --force-new-deployment
-        else
-          echo "ℹ️ ECS service not found (likely just created by Terraform). Skipping redeploy."
-        fi
-
-    - name: Wait for ECS Service to Stabilize
-      run: |
-        aws ecs wait services-stable \
-          --cluster ${ECR_REPO}-cluster \
-          --services ${ECR_REPO}-service
-
-    - name: Get Public IP of Running ECS Task
-      run: |
-        CLUSTER_NAME="${ECR_REPO}-cluster"
-        SERVICE_NAME="${ECR_REPO}-service"
-        for i in {1..10}; do
-          TASK_ARN=$(aws ecs list-tasks --cluster $CLUSTER_NAME --service-name $SERVICE_NAME --query "taskArns[0]" --output text)
-          if [[ "$TASK_ARN" != "None" && "$TASK_ARN" != "" ]]; then
-            echo "✅ Task started: $TASK_ARN"
-            break
-          fi
-          sleep 10
-        done
-        if [[ -z "$TASK_ARN" || "$TASK_ARN" == "None" ]]; then
-          echo "❌ ECS task not found."
-          exit 1
-        fi
-        ENI_ID=$(aws ecs describe-tasks --cluster $CLUSTER_NAME --tasks $TASK_ARN \
-          --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" --output text)
-        PUBLIC_IP=$(aws ec2 describe-network-interfaces --network-interface-ids $ENI_ID \
-          --query "NetworkInterfaces[0].Association.PublicIp" --output text)
-        echo "🔗 App is live at: http://$PUBLIC_IP:5000"
+        aws ecs update-service \
+          --cluster flask-cluster \
+          --service flask-service \
+          --force-new-deployment

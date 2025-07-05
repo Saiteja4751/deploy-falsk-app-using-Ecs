@@ -1,9 +1,9 @@
-variable "app_name" {
-  description = "Name of the Flask ECS application"
-  default     = "flask-ecs-app"
+variable "aws_region" {}
+variable "ecr_repo_name" {}
+variable "ecs_cluster_name" {}
+variable "ecs_service_name" {}
+variable "ecs_task_family" {}
+variable "subnet_ids" {
+  type = list(string)
 }
-
-variable "iam_role_name" {
-  description = "IAM role name for ECS task execution"
-  default     = "flask-ecs-app-ecs-task-execution"
-}
+variable "security_group_id" {}
