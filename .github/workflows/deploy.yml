@@ -1,19 +1,25 @@
-name: Terraform ECS Deployment
+name: CI/CD for Flask ECR
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_REGION: us-east-1
+  ECR_REPO: flask-ecr-app
 
 jobs:
-  deploy:
+  setup-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout Code
       uses: actions/checkout@v3
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
@@ -22,33 +28,27 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+    - name: Initialize Terraform
+      working-directory: terraform
+      run: terraform init
 
-    - name: Terraform Init
-      run: terraform -chdir=terraform init
+    - name: Apply Terraform
+      working-directory: terraform
+      run: terraform apply -auto-approve
 
-    - name: Terraform Plan
-      run: terraform -chdir=terraform plan
-
-    - name: Terraform Apply
-      run: terraform -chdir=terraform apply -auto-approve
-
-    - name: Get ECR Repo URI-1
-      id: get-ecr
+    - name: Get ECR Repository URI
+      id: ecr
       run: |
-        REPO_URI=$(aws ecr describe-repositories --repository-names flask-ecr --query "repositories[0].repositoryUri" --output text)
-        echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
+        URI=$(aws ecr describe-repositories --repository-names $ECR_REPO --query "repositories[0].repositoryUri" --output text)
+        echo "REPO_URI=$URI" >> $GITHUB_ENV
 
-    - name: Build and Push Docker Image to ECR
+    - name: Login to Amazon ECR
       run: |
-        docker build -t $REPO_URI:latest .
-        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REPO_URI
+        aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${{ env.REPO_URI }}
+
+    - name: Build Docker Image
+      run: docker build -t $REPO_URI:latest ./app
+
+    - name: Push Docker Image
+      run: |
         docker push $REPO_URI:latest
-
-    - name: Force ECS Service Redeploy
-      run: |
-        aws ecs update-service \
-          --cluster flask-cluster \
-          --service flask-service \
-          --force-new-deployment

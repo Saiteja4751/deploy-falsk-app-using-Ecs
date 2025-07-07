@@ -1,9 +1,8 @@
-variable "aws_region" {}
-variable "ecr_repo_name" {}
-variable "ecs_cluster_name" {}
-variable "ecs_service_name" {}
-variable "ecs_task_family" {}
-variable "subnet_ids" {
-  type = list(string)
+variable "aws_region" {
+  default = "us-east-1"
 }
-variable "security_group_id" {}
+
+variable "ecr_repo_name" {
+  description = "ECR repository name"
+  type        = string
+}
