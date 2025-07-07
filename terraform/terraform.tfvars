@@ -1,10 +1,7 @@
 aws_region     = "us-east-1"
 ecr_repo_name  = "flask-ecr-app"
 
-
-
 ecs_cluster_name = "flask-cluster"
-aws_region       = "us-east-1"
 
 # Replace these with your actual values
 subnet_ids        = ["subnet-0540937d860abb34e", "subnet-0b6fa121406a06f42"]
