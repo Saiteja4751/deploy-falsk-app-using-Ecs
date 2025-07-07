@@ -1,4 +1,4 @@
-resource "aws_ecr_repository" "flask_repo" {
+data "aws_ecr_repository" "flask_repo" {
   name = var.ecr_repo_name
 }
 
