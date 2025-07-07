@@ -39,10 +39,11 @@ jobs:
             --repository-name $ECR_REPO \
             --query "repository.repositoryUri" \
             --output text)
+        else
+          echo "ECR repository already exists."
         fi
 
         echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
-        echo "ECR repository: $REPO_URI"
 
     - name: Login to Amazon ECR
       run: |
@@ -78,6 +79,16 @@ jobs:
     - name: Terraform Init
       working-directory: terraform
       run: terraform init
+
+    - name: Terraform Destroy (clean up old ECS services)
+      working-directory: terraform
+      continue-on-error: true
+      env:
+        TF_VAR_ecr_repo_name: ${{ env.ECR_REPO }}
+        TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
+        TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
+        TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
+      run: terraform destroy -auto-approve
 
     - name: Terraform Apply (Provision ECS + Service)
       working-directory: terraform
