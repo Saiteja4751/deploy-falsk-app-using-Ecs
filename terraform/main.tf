@@ -1,43 +1,100 @@
-data "aws_ecr_repository" "flask_repo" {
-  name = var.ecr_repo_name
-}
+name: CI/CD Flask to ECR and ECS
 
-resource "aws_ecs_cluster" "flask_cluster" {
-  name = var.ecs_cluster_name
-}
+on:
+  push:
+    branches:
+      - main
 
-data "aws_iam_role" "ecs_task_execution" {
-  name = "ecsTaskExecutionRole"
-}
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: flask-ecr-app
 
-resource "aws_ecs_task_definition" "flask_task" {
-  family                   = "flask-task"
-  network_mode             = "awsvpc"
-  requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
-  memory                   = "512"
-  execution_role_arn       = data.aws_iam_role.ecs_task_execution.arn
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
 
-  container_definitions = jsonencode([{
-    name  = "flask-container"
-    image = var.ecr_image_uri
-    portMappings = [{
-      containerPort = 5000
-      protocol      = "tcp"
-    }]
-  }])
-}
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-resource "aws_ecs_service" "flask_service" {
-  name            = "flask-service"
-  cluster         = aws_ecs_cluster.flask_cluster.id
-  task_definition = aws_ecs_task_definition.flask_task.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-  network_configuration {
-    subnets          = var.subnet_ids
-    security_groups  = [var.security_group_id]
-    assign_public_ip = true
-  }
-}
+    - name: Check if ECR Repository Exists, Create if Not
+      id: ecr
+      run: |
+        set -e
+        REPO_URI=$(aws ecr describe-repositories \
+          --repository-names $ECR_REPO \
+          --query "repositories[0].repositoryUri" \
+          --output text 2>/dev/null || true)
+
+        if [ -z "$REPO_URI" ]; then
+          echo "Creating ECR repository..."
+          REPO_URI=$(aws ecr create-repository \
+            --repository-name $ECR_REPO \
+            --query "repository.repositoryUri" \
+            --output text)
+        else
+          echo "ECR repository already exists."
+        fi
+
+        echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
+
+    - name: Login to Amazon ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION \
+          | docker login --username AWS --password-stdin $REPO_URI
+
+    - name: Build Docker Image
+      run: docker build -t $REPO_URI:latest ./app
+
+    - name: Push Docker Image
+      run: docker push $REPO_URI:latest
+
+    - name: Get Subnet IDs
+      id: subnets
+      run: |
+        SUBNETS=$(aws ec2 describe-subnets --query "Subnets[].SubnetId" --output text)
+        echo "SUBNET_IDS=$SUBNETS" >> $GITHUB_ENV
+
+    - name: Get Default Security Group ID
+      id: sg
+      run: |
+        SG_ID=$(aws ec2 describe-security-groups \
+          --filters Name=group-name,Values=default \
+          --query "SecurityGroups[0].GroupId" \
+          --output text)
+        echo "SECURITY_GROUP_ID=$SG_ID" >> $GITHUB_ENV
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
+
+    - name: Terraform Destroy (clean up old ECS services)
+      working-directory: terraform
+      continue-on-error: true
+      env:
+        TF_VAR_ecr_repo_name: ${{ env.ECR_REPO }}
+        TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
+        TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
+        TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
+      run: terraform destroy -auto-approve
+
+    - name: Terraform Apply (Provision ECS + Service)
+      working-directory: terraform
+      env:
+        TF_VAR_ecr_repo_name: ${{ env.ECR_REPO }}
+        TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
+        TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
+        TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
+      run: terraform apply -auto-approve
