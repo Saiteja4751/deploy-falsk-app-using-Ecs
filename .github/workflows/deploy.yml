@@ -1,4 +1,4 @@
-name: CI/CD for Flask to ECR
+name: CI/CD Flask to ECR
 
 on:
   push:
@@ -35,29 +35,35 @@ jobs:
 
     - name: Terraform Apply
       working-directory: terraform
-      run: terraform apply -auto-approve
+      run: terraform apply -auto-approve || true  # skip failure if already exists
 
-    - name: Wait for ECR to be ready
-      run: sleep 10
-
-    - name: Get ECR Repo URI
-      id: get-ecr-uri
+    - name: Check/Create ECR Repo
+      id: ecr
       run: |
-        URI=$(aws ecr describe-repositories \
+        REPO_URI=$(aws ecr describe-repositories \
           --repository-names $ECR_REPO \
           --query "repositories[0].repositoryUri" \
-          --output text)
-        echo "REPO_URI=$URI" >> $GITHUB_ENV
+          --output text 2>/dev/null || true)
+
+        if [ -z "$REPO_URI" ]; then
+          echo "ECR repository does not exist. Creating..."
+          REPO_URI=$(aws ecr create-repository \
+            --repository-name $ECR_REPO \
+            --query "repository.repositoryUri" \
+            --output text)
+        else
+          echo "ECR repository already exists."
+        fi
+
+        echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
 
     - name: Login to Amazon ECR
       run: |
         aws ecr get-login-password --region $AWS_REGION \
         | docker login --username AWS --password-stdin $REPO_URI
 
-    - name: Build Docker image
-      run: |
-        docker build -t $REPO_URI:latest ./app
+    - name: Build Docker Image
+      run: docker build -t $REPO_URI:latest ./app
 
-    - name: Push Docker image
-      run: |
-        docker push $REPO_URI:latest
+    - name: Push Docker Image
+      run: docker push $REPO_URI:latest
