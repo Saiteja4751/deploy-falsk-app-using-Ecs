@@ -1,4 +1,4 @@
-name: CI/CD Flask to ECR
+name: CI/CD Flask to ECR and ECS
 
 on:
   push:
@@ -34,17 +34,14 @@ jobs:
           --output text 2>/dev/null || true)
 
         if [ -z "$REPO_URI" ]; then
-          echo "ECR repository $ECR_REPO does not exist. Creating..."
+          echo "Creating ECR repository..."
           REPO_URI=$(aws ecr create-repository \
             --repository-name $ECR_REPO \
             --query "repository.repositoryUri" \
             --output text)
-        else
-          echo "ECR repository $ECR_REPO already exists."
         fi
 
         echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
-        echo "Repository URI: $REPO_URI"
 
     - name: Login to Amazon ECR
       run: |
@@ -56,3 +53,35 @@ jobs:
 
     - name: Push Docker Image
       run: docker push $REPO_URI:latest
+
+    - name: Get Subnet IDs
+      id: subnets
+      run: |
+        SUBNETS=$(aws ec2 describe-subnets --query "Subnets[].SubnetId" --output text)
+        echo "SUBNET_IDS=$SUBNETS" >> $GITHUB_ENV
+
+    - name: Get Default Security Group ID
+      id: sg
+      run: |
+        SG_ID=$(aws ec2 describe-security-groups \
+          --filters Name=group-name,Values=default \
+          --query "SecurityGroups[0].GroupId" \
+          --output text)
+        echo "SECURITY_GROUP_ID=$SG_ID" >> $GITHUB_ENV
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
+
+    - name: Terraform Apply (Provision ECS + Service)
+      working-directory: terraform
+      env:
+        TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
+        TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
+        TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
+      run: terraform apply -auto-approve
