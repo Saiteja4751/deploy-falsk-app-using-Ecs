@@ -17,11 +17,6 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Set up Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
-
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
@@ -29,38 +24,32 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Terraform Init
-      working-directory: terraform
-      run: terraform init
-
-    - name: Terraform Apply
-      working-directory: terraform
-      run: terraform apply -auto-approve || true  # skip failure if already exists
-
-    - name: Check/Create ECR Repo
+    - name: Check if ECR Repository Exists, Create if Not
       id: ecr
       run: |
+        set -e
         REPO_URI=$(aws ecr describe-repositories \
           --repository-names $ECR_REPO \
           --query "repositories[0].repositoryUri" \
           --output text 2>/dev/null || true)
 
         if [ -z "$REPO_URI" ]; then
-          echo "ECR repository does not exist. Creating..."
+          echo "ECR repository $ECR_REPO does not exist. Creating..."
           REPO_URI=$(aws ecr create-repository \
             --repository-name $ECR_REPO \
             --query "repository.repositoryUri" \
             --output text)
         else
-          echo "ECR repository already exists."
+          echo "ECR repository $ECR_REPO already exists."
         fi
 
         echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
+        echo "Repository URI: $REPO_URI"
 
     - name: Login to Amazon ECR
       run: |
         aws ecr get-login-password --region $AWS_REGION \
-        | docker login --username AWS --password-stdin $REPO_URI
+          | docker login --username AWS --password-stdin $REPO_URI
 
     - name: Build Docker Image
       run: docker build -t $REPO_URI:latest ./app
