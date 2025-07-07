@@ -80,6 +80,16 @@ jobs:
       working-directory: terraform
       run: terraform init
 
+    - name: Terraform Destroy (Optional Clean)
+      working-directory: terraform
+      continue-on-error: true
+      env:
+        TF_VAR_ecr_repo_name: ${{ env.ECR_REPO }}
+        TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
+        TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
+        TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
+      run: terraform destroy -auto-approve
+
     - name: Terraform Apply (Provision ECS + Service)
       working-directory: terraform
       env:
