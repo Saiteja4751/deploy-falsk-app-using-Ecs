@@ -39,6 +39,8 @@ jobs:
             --repository-name $ECR_REPO \
             --query "repository.repositoryUri" \
             --output text)
+        else
+          echo "ECR repository already exists."
         fi
 
         echo "REPO_URI=$REPO_URI" >> $GITHUB_ENV
@@ -81,6 +83,7 @@ jobs:
     - name: Terraform Apply (Provision ECS + Service)
       working-directory: terraform
       env:
+        TF_VAR_ecr_repo_name: ${{ env.ECR_REPO }}
         TF_VAR_ecr_image_uri: ${{ env.REPO_URI }}:latest
         TF_VAR_subnet_ids: ${{ env.SUBNET_IDS }}
         TF_VAR_security_group_id: ${{ env.SECURITY_GROUP_ID }}
