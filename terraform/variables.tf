@@ -1,8 +1,9 @@
 variable "aws_region" {
-  default = "us-east-1"
+  description = "AWS Region"
+  type        = string
 }
 
 variable "ecr_repo_name" {
-  description = "ECR repository name"
+  description = "ECR Repository Name"
   type        = string
 }
