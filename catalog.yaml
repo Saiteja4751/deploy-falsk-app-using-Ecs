@@ -1,21 +1,21 @@
 apiVersion: harness.io/v1
-kind: component
-name: my-component
-identifier: mycomponent
+kind: Component
 type: service
+
+name: flask-demo
+identifier: flaskdemo
+
 owner: group:account/_account_all_users
+
 projectIdentifier: TEST
 orgIdentifier: default
+
 spec:
   lifecycle: production
-  system: []
+
   sourceCode:
     provider: Github
     repoName: deploy-falsk-app-using-Ecs
     connectorRef: account.mytoken
     branch: main
     monoRepo: false
-metadata:
-  tags:
-    - devops
-  description: practice
